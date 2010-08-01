@@ -4,60 +4,59 @@ use strict;
 use warnings;
 use utf8;
 use Config;
-use FindBin::libs;
 use base qw( Board::Base Class::Accessor::Fast );
+use FindBin::libs;
 use CGI;
 use Text::MicroTemplate::File;
 use Board::Model;
-use Board::Controller;
-use Config::INI;
+use Board::Config;
 use Carp qw/croak/;
 use HTTP::Message;
 use HTTP::Headers;
 
 our $VERSION = '0.01';
 
-my $CONTROLLER_CLASS  = "Board::Controller";
-
-__PACKAGE__->mk_accessors(qw/path query dbi controller error/);
+__PACKAGE__->mk_accessors(qw/path query tmt error/);
 
 sub new {
-    my ( $class, $path ) = @_;
+    my $class = shift;
+    my $path = Board::Config->new->path;
     my $self = bless {
         path  => $path || '',
         query => CGI->new,
-        dbi   => Board::Model->new(+{
-            dsn      => 'dbi:mysql:database=test',
-            username => 'root',
-            password => '',
-        }),
-        controller => Board::Controller->new({
-            tmt   => Text::MicroTemplate::File->new(
-                include_path => $path . "/html",
-            ),
-        }),
+        tmt   => Text::MicroTemplate::File->new(
+            include_path => $path . "/html",
+        ),
     }, $class;
-    $self->controller->tmt->{tag_start} = '<?tmt';
+    $self->tmt->{tag_start} = '<?tmt';
     return $self;
 }
+
+sub db { shift->dbi }
 
 sub handle {
     my $self    = $_[0];
     my $command = $self->query->param('command') || 'index';
     
-    if ( $command ne 'index' ) {
-        $self->error( $self->invalied_check );
-        $command = "error" if defined $self->error;
+    my $path = $self->path;
+    my $app = "${path}/html/${command}.pl";
+    my $app_html = "${command}.html";
+    my $content;
+
+    if (-f $app ) {
+        my $pkg = do $app;
+        if ( my $e = $@ ) {
+            ref $e ? warn $e && return : die;
+        }
+        if ( my $code = $pkg->run() ) {
+            $content = $code->();
+        } else {
+            die "runメソッドが定義されていません";
+        }
+    } else {
+        $content = $self->tmt->render_file($app_html, $self)->as_string;
     }
 
-    my $method = "dispatch_$command";
-    my ( $code, $content ) = $self->controller->$method({
-        error   => $self->error,
-        param   => {
-            boardid => $self->query->param('boardid'),
-            parent  => $self->query->param('parent'),
-        },
-    });
     my $h = HTTP::Headers->new( Content_Type => 'text/html');
     my $r = HTTP::Message->new( $h, $content );
     print $r->as_string;
